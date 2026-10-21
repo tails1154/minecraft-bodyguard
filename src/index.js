@@ -21,6 +21,7 @@ let stopping = false;
 let guardsStarted = false;
 let masterAuthAttempted = false;
 const workers = new Map();
+const log = message => console.log(`[${new Date().toISOString()}] [master] ${message}`);
 const master = mineflayer.createBot({
   host: config.host,
   port: config.port,
@@ -29,25 +30,33 @@ const master = mineflayer.createBot({
   ...(config.version ? { version: config.version } : {})
 });
 
-if (!config.password) console.warn('[bodyguard] AUTHME_PASSWORD is empty; AuthMe login/register will be skipped.');
+log(`starting controller as ${config.username}_master for ${config.host}:${config.port}; clones=${count}`);
+if (!config.password) log('AUTHME_PASSWORD is empty; AuthMe login/register will be skipped.');
 
-master.on('spawn', () => attemptMasterAuth());
+master.on('spawn', () => {
+  log('controller spawned');
+  attemptMasterAuth();
+});
 master.on('chat', (sender, message) => {
-  if (sender !== master.username) handleChat(sender, message);
+  if (sender !== master.username) {
+    log(`chat from ${sender}: ${message}`);
+    handleChat(sender, message);
+  }
 });
 master.on('messagestr', message => {
   if (/\b(login|log in|register|registr|password)\b/i.test(message)) attemptMasterAuth(message);
 });
-master.on('error', error => console.error('[master] error:', error.message));
-master.on('kicked', reason => console.error('[master] kicked:', reason));
+master.on('error', error => log(`error: ${error.message}`));
+master.on('kicked', reason => log(`kicked: ${reason}`));
 master.on('end', () => {
-  if (!stopping) console.error('[master] connection ended.');
+  if (!stopping) log('connection ended');
 });
 
 function attemptMasterAuth(message = '') {
   if (!config.password || masterAuthAttempted || !master.chat) return;
   if (!message || /\b(register|registr|login|log in|password)\b/i.test(message)) {
     masterAuthAttempted = true;
+    log('sending AuthMe register/login commands');
     setTimeout(() => master.chat(`/register ${config.password} ${config.password}`), 700);
     setTimeout(() => master.chat(`/login ${config.password}`), 1400);
   }
@@ -56,6 +65,7 @@ function attemptMasterAuth(message = '') {
 function startGuards() {
   if (guardsStarted) return false;
   guardsStarted = true;
+  log(`deploying ${count} clone workers`);
   for (let i = 1; i <= count; i += 1) startGuard(i);
   return true;
 }
@@ -69,12 +79,14 @@ function startGuard(id) {
   worker.on('error', error => console.error(`[guard ${id}] worker error:`, error.message));
   worker.on('exit', code => {
     workers.delete(id);
-    if (!stopping && code !== 0) console.error(`[guard ${id}] stopped with code ${code}`);
+    log(`guard ${id} exited with code ${code}`);
+    if (!stopping && code !== 0) log(`guard ${id} exited unexpectedly`);
   });
 }
 
 function onWorkerMessage(id, message) {
   if (message.type === 'ready') {
+    log(`guard ${id} ready as ${message.username}`);
     sendTo(id, { type: 'owner', owner });
     return;
   }
@@ -85,11 +97,12 @@ function onWorkerMessage(id, message) {
   }
 
   if (message.type === 'defend') {
+    log(`guard ${id} reported a threat: ${message.target.username || `entity ${message.target.id}`}`);
     broadcast({ type: 'defend', target: message.target });
     return;
   }
 
-  if (message.type === 'log') console.log(`[guard ${id}] ${message.message}`);
+  if (message.type === 'log') log(`[guard ${id}] ${message.message}`);
 }
 
 function handleChat(sender, message) {
@@ -99,6 +112,7 @@ function handleChat(sender, message) {
   if (verb === '!claim') {
     if (!owner) {
       owner = sender;
+      log(`${owner} claimed the bodyguards`);
       say(`Bodyguard detail assigned to ${owner}. Send !clones to deploy it.`);
       console.log(`[bodyguard] ${owner} claimed the bodyguards.`);
     } else if (sender.toLowerCase() === owner.toLowerCase()) {
@@ -110,6 +124,7 @@ function handleChat(sender, message) {
   if (!owner || sender.toLowerCase() !== owner.toLowerCase()) return;
 
   if (verb === '!clones') {
+    log(`${sender} requested clone deployment`);
     if (startGuards()) {
       broadcast({ type: 'owner', owner });
       say(`Deploying ${count} bodyguards.`);
@@ -138,6 +153,7 @@ function handleChat(sender, message) {
 }
 
 function say(message) {
+  log(`say: ${message}`);
   if (master.chat) master.chat(message);
 }
 
@@ -153,6 +169,7 @@ function broadcast(message) {
 function shutdown() {
   if (stopping) return;
   stopping = true;
+  log('shutting down controller and clone workers');
   for (const worker of workers.values()) worker.postMessage({ type: 'shutdown' });
   if (master) master.quit('Bodyguard dismissed');
   setTimeout(() => process.exit(0), 5000).unref();

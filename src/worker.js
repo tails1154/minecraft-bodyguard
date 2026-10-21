@@ -16,6 +16,7 @@ let betrayed = false;
 let combatTarget = null;
 let lastThreatAt = 0;
 let fleeing = false;
+let lastFollowTarget = null;
 const signalThread = new Worker(require.resolve('./signal.js'));
 
 signalThread.on('message', message => {
@@ -26,6 +27,7 @@ connect();
 
 function connect() {
   authAttempted = false;
+  log(`connecting as ${username} to ${config.host}:${config.port}`);
   bot = mineflayer.createBot({
     host: config.host,
     port: config.port,
@@ -37,6 +39,7 @@ function connect() {
   bot.loadPlugin(PvP);
 
   bot.once('spawn', () => {
+    log(`spawned in ${bot.game?.dimension || 'unknown dimension'}`);
     movements = new Movements(bot);
     movements.canDig = false;
     bot.pathfinder.setMovements(movements);
@@ -45,7 +48,10 @@ function connect() {
   });
 
   bot.on('chat', (sender, message) => {
-    if (sender !== bot.username) parentPort.postMessage({ type: 'chat', username: sender, message });
+    if (sender !== bot.username) {
+      log(`chat from ${sender}: ${message}`);
+      parentPort.postMessage({ type: 'chat', username: sender, message });
+    }
   });
 
   bot.on('messagestr', message => {
@@ -56,6 +62,7 @@ function connect() {
     if (!entity || !bot.entity || !isProtected(entity)) return;
     const attacker = nearestAttacker(entity);
     if (attacker) {
+      log(`protected entity was hurt; signaling ${targetLabel(attacker)}`);
       signalThread.postMessage({ type: 'hit', target: serializeTarget(attacker) });
       fight(attacker);
     }
@@ -95,6 +102,7 @@ function attemptAuth(message = '') {
   if (!config.password || authAttempted || !bot || !bot.chat) return;
   if (!message || /\b(register|registr|login|log in|password)\b/i.test(message)) {
     authAttempted = true;
+    log('sending AuthMe register/login commands');
     setTimeout(() => bot.chat(`/register ${config.password} ${config.password}`), 700);
     setTimeout(() => bot.chat(`/login ${config.password}`), 1400);
   }
@@ -103,7 +111,15 @@ function attemptAuth(message = '') {
 function followOwner() {
   if (!owner || !bot.entity || !movements) return;
   const target = findPlayer(owner);
-  if (!target) return;
+  if (!target) {
+    if (lastFollowTarget) log(`owner ${owner} is no longer visible`);
+    lastFollowTarget = null;
+    return;
+  }
+  if (lastFollowTarget !== target) {
+    lastFollowTarget = target;
+    log(`following owner ${owner}`);
+  }
   if (betrayed) {
     fight(target);
     return;
@@ -118,6 +134,7 @@ function followOwner() {
 
 function fight(entity, refreshThreat = true) {
   if (!entity || !bot.pvp || attackCooldown > 0) return;
+  if (combatTarget?.id !== entity.id) log(`attacking ${targetLabel(entity)}`);
   combatTarget = entity;
   if (refreshThreat) lastThreatAt = Date.now();
   fleeing = false;
@@ -128,10 +145,12 @@ function fight(entity, refreshThreat = true) {
 function maintainCombat() {
   if (!combatTarget) return;
   if (!bot.entity || bot.health <= 6) {
+    if (!fleeing) log(`health is ${bot.health}; fleeing from ${targetLabel(combatTarget)}`);
     fleeFrom(combatTarget);
     return;
   }
   if (!bot.entities[combatTarget.id] || combatTarget.health === 0 || Date.now() - lastThreatAt > 4000) {
+    log(`combat ended with ${targetLabel(combatTarget)}`);
     combatTarget = null;
     fleeing = false;
     bot.pvp.stop();
@@ -145,6 +164,7 @@ function fleeFrom(threat) {
   if (bot.pvp) bot.pvp.stop();
   if (fleeing) return;
   fleeing = true;
+  log(`pathfinding away from ${targetLabel(threat)}`);
   const direction = bot.entity.position.minus(threat.position);
   const length = Math.max(direction.norm(), 0.01);
   const destination = bot.entity.position.plus(direction.scaled(12 / length));
@@ -181,16 +201,34 @@ function serializeTarget(entity) {
   return { id: entity.id, username: entity.username || null };
 }
 
+function targetLabel(entity) {
+  return entity?.username || `entity ${entity?.id ?? 'unknown'}`;
+}
+
+function log(message) {
+  parentPort.postMessage({ type: 'log', message });
+}
+
 parentPort.on('message', message => {
-  if (message.type === 'owner') owner = message.owner;
-  if (message.type === 'follow') owner = message.owner;
-  if (message.type === 'betray') betrayed = message.enabled;
+  if (message.type === 'owner') {
+    owner = message.owner;
+    log(`owner set to ${owner}`);
+  }
+  if (message.type === 'follow') {
+    owner = message.owner;
+    log(`follow mode enabled for ${owner}`);
+  }
+  if (message.type === 'betray') {
+    betrayed = message.enabled;
+    log(`betray mode ${betrayed ? 'enabled' : 'disabled'}`);
+  }
   if (message.type === 'defend') {
     const target = Object.values(bot.entities).find(entity => entity.id === message.target.id || (message.target.username && entity.username === message.target.username));
     if (target) fight(target);
   }
   if (message.type === 'say' && bot?.chat) bot.chat(message.message);
   if (message.type === 'shutdown') {
+    log('shutdown requested');
     signalThread.postMessage({ type: 'shutdown' });
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
