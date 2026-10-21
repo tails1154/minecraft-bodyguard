@@ -3,6 +3,8 @@ const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const readline = require('node:readline');
 const mineflayer = require('mineflayer');
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const { plugin: PvP } = require('mineflayer-pvp');
 
 const MAX_GUARDS = 5;
 const count = clampInt(process.env.BODYGUARD_COUNT || 1, 1, MAX_GUARDS);
@@ -24,6 +26,14 @@ let guardsStarted = false;
 let masterAuthAttempted = false;
 let masterAuthTimer;
 let masterAuthComplete = false;
+let masterMovements;
+let masterFollowTimer;
+let masterCombatTarget;
+let masterLastThreatAt = 0;
+let masterFleeing = false;
+let masterBetrayed = false;
+let masterReadyAnnounced = false;
+let masterEating = false;
 const workers = new Map();
 const log = message => console.log(`[${new Date().toISOString()}] [master] ${message}`);
 const master = mineflayer.createBot({
@@ -33,13 +43,21 @@ const master = mineflayer.createBot({
   auth: config.auth,
   ...(config.version ? { version: config.version } : {})
 });
+master.loadPlugin(pathfinder);
+master.loadPlugin(PvP);
 
 log(`starting controller as ${config.username}_master for ${config.host}:${config.port}; clones=${count}`);
 if (!config.password) log('AUTHME_PASSWORD is empty; AuthMe login/register will be skipped.');
 
 master.on('spawn', () => {
   log('controller spawned');
+  masterMovements = new Movements(master);
+  masterMovements.canDig = false;
+  master.pathfinder.setMovements(masterMovements);
+  clearInterval(masterFollowTimer);
+  masterFollowTimer = setInterval(masterMaintain, 1000);
   attemptMasterAuth();
+  masterAnnounceReady();
 });
 master.on('chat', (sender, message) => {
   if (sender !== master.username) {
@@ -55,6 +73,7 @@ master.on('messagestr', message => {
       clearTimeout(masterAuthTimer);
       masterAuthTimer = undefined;
       log('controller authentication appears successful');
+      masterAnnounceReady();
     } else {
       attemptMasterAuth(message);
     }
@@ -64,6 +83,31 @@ master.on('error', error => log(`error: ${error.message}`));
 master.on('kicked', reason => log(`kicked: ${reason}`));
 master.on('end', () => {
   if (!stopping) log('connection ended');
+});
+master.on('entityHurt', entity => {
+  if (!entity || !master.entity || !masterIsProtected(entity)) return;
+  const attacker = masterNearestAttacker(entity);
+  if (attacker) masterFight(attacker);
+});
+master.on('entitySwingArm', entity => {
+  if (!entity?.username || entity.username.toLowerCase() !== String(owner || '').toLowerCase()) return;
+  const target = masterNearestAttacker(entity);
+  if (target) masterFight(target);
+});
+master.on('playerCollect', (collector, collected) => {
+  if (!master.entity || collector.id !== master.entity.id || typeof collected.getDroppedItem !== 'function') return;
+  let item;
+  try {
+    item = collected.getDroppedItem();
+  } catch (error) {
+    log(`master collected an item but could not read it: ${error.message}`);
+    return;
+  }
+  const destination = equipmentDestination(item?.name);
+  if (!item || !destination) return;
+  master.chat('Thanks!');
+  log(`master picked up ${item.count} ${item.displayName || item.name}; equipping to ${destination}`);
+  setTimeout(() => masterEquipCollectedItem(item.name, destination), 250);
 });
 
 function attemptMasterAuth(message = '') {
@@ -90,6 +134,126 @@ function isAuthMessage(message) {
 
 function isAuthSuccess(message) {
   return /success|successful|logged[ -]?in|already logged|registration complete|registered successfully/i.test(message) && !/not logged|failed|invalid|wrong|error/i.test(message);
+}
+
+function masterAnnounceReady() {
+  if (!master.entity || !owner || masterReadyAnnounced || !master.chat) return;
+  masterReadyAnnounced = true;
+  master.chat(`Bodyguard for ${owner}. Ready for commands.`);
+  log(`master announced readiness for ${owner}`);
+}
+
+function masterMaintain() {
+  if (!master.entity || !masterMovements || !owner) return;
+  masterEatIfHungry();
+  if (masterCombatTarget) {
+    if (master.health <= 6) {
+      masterFlee(masterCombatTarget);
+      return;
+    }
+    if (!master.entities[masterCombatTarget.id] || masterCombatTarget.health === 0 || Date.now() - masterLastThreatAt > 4000) {
+      log(`master combat ended with ${masterTargetLabel(masterCombatTarget)}`);
+      masterCombatTarget = null;
+      masterFleeing = false;
+      master.pvp.stop();
+    } else if (!masterFleeing) {
+      master.pvp.attack(masterCombatTarget);
+    }
+    if (masterCombatTarget) return;
+  }
+  const target = masterFindPlayer(owner);
+  if (!target) return;
+  if (masterBetrayed) {
+    masterFight(target);
+    return;
+  }
+  const distance = master.entity.position.distanceTo(target.position);
+  if (distance > config.followDistance + 1) {
+    master.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, config.followDistance));
+    master.setControlState('sprint', true);
+    master.setControlState('jump', true);
+  } else if (master.pathfinder.goal) {
+    master.pathfinder.setGoal(null);
+    master.setControlState('sprint', false);
+    master.setControlState('jump', false);
+  }
+}
+
+function masterFight(target) {
+  if (!target || !master.pvp) return;
+  masterCombatTarget = target;
+  masterLastThreatAt = Date.now();
+  masterFleeing = false;
+  log(`master attacking ${masterTargetLabel(target)}`);
+  master.setControlState('sprint', true);
+  master.setControlState('jump', true);
+  master.pvp.attack(target);
+}
+
+function masterEatIfHungry() {
+  if (masterEating || !master.inventory || master.food == null || master.food > 14) return;
+  const food = master.inventory.items().find(item => master.registry.items[item.type]?.foodPoints > 0);
+  if (!food) return;
+  masterEating = true;
+  master.equip(food, 'hand')
+    .then(() => master.consume())
+    .then(() => log(`master ate ${food.displayName || food.name} automatically`))
+    .catch(error => log(`master could not auto-eat ${food.name}: ${error.message}`))
+    .finally(() => { masterEating = false; });
+}
+
+function masterFlee(threat) {
+  if (masterFleeing || !threat?.position) return;
+  masterFleeing = true;
+  master.pvp.stop();
+  const direction = master.entity.position.minus(threat.position);
+  const length = Math.max(direction.norm(), 0.01);
+  const destination = master.entity.position.plus(direction.scaled(12 / length));
+  log(`master fleeing from ${masterTargetLabel(threat)} at ${master.health} health`);
+  master.pathfinder.setGoal(new goals.GoalNear(destination.x, destination.y, destination.z, 2));
+}
+
+function masterFindPlayer(name) {
+  const wanted = name.toLowerCase();
+  const player = master.players[name] || Object.values(master.players).find(candidate => candidate.username?.toLowerCase() === wanted);
+  return player?.entity || Object.values(master.entities).find(entity => entity.username?.toLowerCase() === wanted) || null;
+}
+
+function masterIsProtected(entity) {
+  return entity === master.entity || Boolean(entity.username && (entity.username.toLowerCase() === String(owner || '').toLowerCase() || entity.username.toLowerCase().startsWith(`${config.username.toLowerCase()}_`)));
+}
+
+function masterNearestAttacker(hurtEntity) {
+  return Object.values(master.entities)
+    .filter(entity => entity !== master.entity && !masterIsProtected(entity) && entity.position && hurtEntity.position.distanceTo(entity.position) <= 5)
+    .sort((a, b) => hurtEntity.position.distanceTo(a.position) - hurtEntity.position.distanceTo(b.position))[0] || null;
+}
+
+function masterTargetLabel(entity) {
+  return entity?.username || `entity ${entity?.id ?? 'unknown'}`;
+}
+
+function equipmentDestination(itemName = '') {
+  if (/(helmet|turtle_shell|turtle_helmet)$/.test(itemName)) return 'head';
+  if (/(chestplate|elytra)$/.test(itemName)) return 'torso';
+  if (/leggings$/.test(itemName)) return 'legs';
+  if (/(boots|horse_armor)$/.test(itemName)) return 'feet';
+  if (/(sword|axe|trident|bow|crossbow|mace)$/.test(itemName)) return 'hand';
+  return null;
+}
+
+async function masterEquipCollectedItem(itemName, destination) {
+  const item = master.inventory?.items().find(candidate => candidate.name === itemName);
+  if (!item) {
+    log(`master could not find collected ${itemName} in inventory`);
+    return;
+  }
+  try {
+    await master.equip(item, destination);
+    log(`master equipped ${itemName} in ${destination}`);
+  } catch (error) {
+    log(`master could not equip ${itemName}: ${error.message}`);
+  }
 }
 
 function startGuards() {
@@ -140,7 +304,7 @@ function handleChat(sender, message) {
   const verb = command[0].toLowerCase();
 
   if (verb === '!help') {
-    say('Commands: !claim, !clones, !guards status, !guards follow, !guards off, !guards betray');
+    say('Commands: !claim, !clones, !attack <player>, !guards status, !guards follow, !guards off, !disconnect, !guards betray');
     return;
   }
 
@@ -157,6 +321,25 @@ function handleChat(sender, message) {
   }
 
   if (!owner || sender.toLowerCase() !== owner.toLowerCase()) return;
+
+  if (verb === '!attack' && command[1]) {
+    const targetName = command[1];
+    const target = masterFindPlayer(targetName);
+    if (targetName.toLowerCase() !== owner.toLowerCase() && (!target || !masterIsProtected(target))) {
+      if (target) masterFight(target);
+      broadcast({ type: 'attack', target: targetName });
+      say(`Attacking ${targetName}.`);
+    } else {
+      say(`${targetName} is not visible or is protected.`);
+    }
+    return;
+  }
+
+  if (verb === '!disconnect') {
+    say('Bodyguards disconnecting.');
+    shutdown();
+    return;
+  }
 
   if (verb === '!clones') {
     log(`${sender} requested clone deployment`);
@@ -175,12 +358,14 @@ function handleChat(sender, message) {
       say('Bodyguards disconnecting.');
       shutdown();
     } else if (action === 'status') {
-      say(`${workers.size}/${count} bodyguards are connected.`);
+      say(`${workers.size + 1}/${count + 1} bodyguards are connected (including master).`);
     } else if (action === 'follow' || action === 'on') {
+      masterBetrayed = false;
       broadcast({ type: 'betray', enabled: false });
       broadcast({ type: 'follow', owner });
       say('Bodyguards following.');
     } else if (action === 'betray') {
+      masterBetrayed = true;
       broadcast({ type: 'betray', enabled: true });
       say('The bodyguards have turned against their owner.');
     }
@@ -204,6 +389,9 @@ function broadcast(message) {
 function shutdown() {
   if (stopping) return;
   stopping = true;
+  clearInterval(masterFollowTimer);
+  master.setControlState('sprint', false);
+  master.setControlState('jump', false);
   log('shutting down controller and clone workers');
   for (const worker of workers.values()) worker.postMessage({ type: 'shutdown' });
   if (master) master.quit('Bodyguard dismissed');

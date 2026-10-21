@@ -24,6 +24,7 @@ let authComplete = false;
 let followTimer;
 let lastFollowDiagnostic = 0;
 let followingGoal = false;
+let eating = false;
 const signalThread = new Worker(require.resolve('./signal.js'));
 
 signalThread.on('message', message => {
@@ -120,6 +121,14 @@ function connect() {
 
   // A nearby entity swinging at a protected player is an earlier signal than damage.
   bot.on('entitySwingArm', entity => {
+    if (entity?.username && entity.username.toLowerCase() === String(owner || '').toLowerCase()) {
+      const target = nearestAttacker(entity);
+      if (target) {
+        signalThread.postMessage({ type: 'hit', target: serializeTarget(target) });
+        fight(target);
+      }
+      return;
+    }
     if (entity && isProtected(entity) === false && isNearProtected(entity, 4)) {
       const protectedEntity = nearestProtected(entity);
       if (protectedEntity && entity.type !== 'object') {
@@ -131,6 +140,7 @@ function connect() {
 
   bot.on('physicsTick', () => {
     if (attackCooldown > 0) attackCooldown -= 1;
+    eatIfHungry();
     maintainCombat();
     if (!combatTarget) followOwner();
   });
@@ -181,6 +191,21 @@ function announceReady() {
   log(`announced readiness for ${owner}`);
 }
 
+function eatIfHungry() {
+  if (eating || !bot?.inventory || bot.food == null || bot.food > 14) return;
+  const food = bot.inventory.items().find(item => {
+    const definition = bot.registry.items[item.type];
+    return definition?.foodPoints > 0;
+  });
+  if (!food) return;
+  eating = true;
+  bot.equip(food, 'hand')
+    .then(() => bot.consume())
+    .then(() => log(`ate ${food.displayName || food.name} automatically`))
+    .catch(error => log(`could not auto-eat ${food.name}: ${error.message}`))
+    .finally(() => { eating = false; });
+}
+
 function equipmentDestination(itemName = '') {
   if (/(helmet|turtle_shell|turtle_helmet)$/.test(itemName)) return 'head';
   if (/(chestplate|elytra)$/.test(itemName)) return 'torso';
@@ -228,12 +253,16 @@ function followOwner() {
   const distance = bot.entity.position.distanceTo(target.position);
   if (distance > config.followDistance + 1) {
     bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, config.followDistance));
+    bot.setControlState('sprint', true);
+    bot.setControlState('jump', true);
     if (!followingGoal) {
       followingGoal = true;
       log(`pathfinding toward ${owner} (${Math.round(distance)} blocks away)`);
     }
   } else if (followingGoal) {
     bot.pathfinder.setGoal(null);
+    bot.setControlState('sprint', false);
+    bot.setControlState('jump', false);
     followingGoal = false;
     log(`within follow distance of ${owner}`);
   }
@@ -246,6 +275,8 @@ function fight(entity, refreshThreat = true) {
   if (refreshThreat) lastThreatAt = Date.now();
   fleeing = false;
   attackCooldown = 10;
+  bot.setControlState('sprint', true);
+  bot.setControlState('jump', true);
   bot.pvp.attack(entity);
 }
 
@@ -261,6 +292,8 @@ function maintainCombat() {
     combatTarget = null;
     fleeing = false;
     bot.pvp.stop();
+    bot.setControlState('sprint', false);
+    bot.setControlState('jump', false);
     return;
   }
   if (!fleeing) fight(combatTarget, false);
@@ -336,11 +369,19 @@ parentPort.on('message', message => {
     const target = Object.values(bot.entities).find(entity => entity.id === message.target.id || (message.target.username && entity.username === message.target.username));
     if (target) fight(target);
   }
+  if (message.type === 'attack') {
+    const target = findPlayer(message.target);
+    if (target && !isProtected(target)) fight(target);
+  }
   if (message.type === 'say' && bot?.chat) bot.chat(message.message);
   if (message.type === 'shutdown') {
     log('shutdown requested');
     clearInterval(followTimer);
     followTimer = undefined;
+    if (bot) {
+      bot.setControlState('sprint', false);
+      bot.setControlState('jump', false);
+    }
     signalThread.postMessage({ type: 'shutdown' });
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
