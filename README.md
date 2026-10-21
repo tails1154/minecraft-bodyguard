@@ -9,7 +9,7 @@ Mineflayer bodyguards managed by a master connection and up to five Node worker 
 3. Set `MC_HOST`, `MC_PORT`, `MC_AUTH`, `BOT_USERNAME`, `BODYGUARD_COUNT` (1–5), and `AUTHME_PASSWORD`.
 4. Start with `npm start`.
 
-The bot usernames are `<BOT_USERNAME>_1`, `<BOT_USERNAME>_2`, and so on. AuthMe servers receive both `/register password password` and `/login password` after spawn when `AUTHME_PASSWORD` is set. Use a different password per deployment and keep it out of source control.
+The bot usernames are `<BOT_USERNAME>_1`, `<BOT_USERNAME>_2`, and so on. AuthMe servers receive `/register password password`, wait for the server response, and then receive `/login password`; login is retried if needed. Set `AUTHME_REGISTER_COMMAND` and `AUTHME_LOGIN_COMMAND` for servers using aliases such as `/reg` and `/l`. Use a different password per deployment and keep it out of source control.
 
 ## In-game commands
 

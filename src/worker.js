@@ -19,6 +19,8 @@ let fleeing = false;
 let lastFollowTarget = null;
 let spawned = false;
 let announcedReady = false;
+let authTimer;
+let authComplete = false;
 const signalThread = new Worker(require.resolve('./signal.js'));
 
 signalThread.on('message', message => {
@@ -29,6 +31,9 @@ connect();
 
 function connect() {
   authAttempted = false;
+  authComplete = false;
+  clearTimeout(authTimer);
+  authTimer = undefined;
   spawned = false;
   announcedReady = false;
   log(`connecting as ${username} to ${config.host}:${config.port}`);
@@ -61,7 +66,17 @@ function connect() {
   });
 
   bot.on('messagestr', message => {
-    if (/\b(login|log in|register|registr|password)\b/i.test(message)) attemptAuth(message);
+    if (isAuthMessage(message)) {
+      log(`AuthMe response: ${message}`);
+      if (isAuthSuccess(message)) {
+        authComplete = true;
+        clearTimeout(authTimer);
+        authTimer = undefined;
+        log('authentication appears successful');
+      } else {
+        attemptAuth(message);
+      }
+    }
   });
 
   bot.on('playerCollect', (collector, collected) => {
@@ -115,13 +130,29 @@ function connect() {
 }
 
 function attemptAuth(message = '') {
-  if (!config.password || authAttempted || !bot || !bot.chat) return;
-  if (!message || /\b(register|registr|login|log in|password)\b/i.test(message)) {
-    authAttempted = true;
-    log('sending AuthMe register/login commands');
-    setTimeout(() => bot.chat(`/register ${config.password} ${config.password}`), 700);
-    setTimeout(() => bot.chat(`/login ${config.password}`), 1400);
-  }
+  if (!config.password || authComplete || authTimer || !bot?.chat) return;
+  if (message && !isAuthMessage(message)) return;
+  authAttempted = true;
+  log('sending AuthMe register command, then login command');
+  bot.chat(`${config.registerCommand} ${config.password} ${config.password}`);
+  setTimeout(() => {
+    if (!authComplete && bot?.chat) {
+      log('sending AuthMe login command');
+      bot.chat(`${config.loginCommand} ${config.password}`);
+    }
+  }, 2200);
+  authTimer = setTimeout(() => {
+    authTimer = undefined;
+    if (!authComplete && authAttempted) attemptAuth();
+  }, 7000);
+}
+
+function isAuthMessage(message) {
+  return /\b(login|log in|register|registr|password|authenticate|unauthenticated)\b/i.test(message);
+}
+
+function isAuthSuccess(message) {
+  return /success|successful|logged[ -]?in|already logged|registration complete|registered successfully/i.test(message) && !/not logged|failed|invalid|wrong|error/i.test(message);
 }
 
 function announceReady() {

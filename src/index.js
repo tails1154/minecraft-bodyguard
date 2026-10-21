@@ -13,6 +13,8 @@ const config = {
   auth: process.env.MC_AUTH || 'offline',
   username: process.env.BOT_USERNAME || 'Bodyguard',
   password: process.env.AUTHME_PASSWORD || '',
+  registerCommand: process.env.AUTHME_REGISTER_COMMAND || '/register',
+  loginCommand: process.env.AUTHME_LOGIN_COMMAND || '/login',
   followDistance: clampInt(process.env.FOLLOW_DISTANCE || 3, 1, 8)
 };
 
@@ -20,6 +22,8 @@ let owner = process.env.OWNER_NAME || null;
 let stopping = false;
 let guardsStarted = false;
 let masterAuthAttempted = false;
+let masterAuthTimer;
+let masterAuthComplete = false;
 const workers = new Map();
 const log = message => console.log(`[${new Date().toISOString()}] [master] ${message}`);
 const master = mineflayer.createBot({
@@ -44,7 +48,17 @@ master.on('chat', (sender, message) => {
   }
 });
 master.on('messagestr', message => {
-  if (/\b(login|log in|register|registr|password)\b/i.test(message)) attemptMasterAuth(message);
+  if (isAuthMessage(message)) {
+    log(`AuthMe response: ${message}`);
+    if (isAuthSuccess(message)) {
+      masterAuthComplete = true;
+      clearTimeout(masterAuthTimer);
+      masterAuthTimer = undefined;
+      log('controller authentication appears successful');
+    } else {
+      attemptMasterAuth(message);
+    }
+  }
 });
 master.on('error', error => log(`error: ${error.message}`));
 master.on('kicked', reason => log(`kicked: ${reason}`));
@@ -53,13 +67,29 @@ master.on('end', () => {
 });
 
 function attemptMasterAuth(message = '') {
-  if (!config.password || masterAuthAttempted || !master.chat) return;
-  if (!message || /\b(register|registr|login|log in|password)\b/i.test(message)) {
-    masterAuthAttempted = true;
-    log('sending AuthMe register/login commands');
-    setTimeout(() => master.chat(`/register ${config.password} ${config.password}`), 700);
-    setTimeout(() => master.chat(`/login ${config.password}`), 1400);
-  }
+  if (!config.password || masterAuthComplete || masterAuthTimer || !master.chat) return;
+  if (message && !isAuthMessage(message)) return;
+  masterAuthAttempted = true;
+  log('sending AuthMe register command, then login command');
+  master.chat(`${config.registerCommand} ${config.password} ${config.password}`);
+  setTimeout(() => {
+    if (!stopping && !masterAuthComplete && master.chat) {
+      log('sending AuthMe login command');
+      master.chat(`${config.loginCommand} ${config.password}`);
+    }
+  }, 2200);
+  masterAuthTimer = setTimeout(() => {
+    masterAuthTimer = undefined;
+    if (!masterAuthComplete && masterAuthAttempted) attemptMasterAuth();
+  }, 7000);
+}
+
+function isAuthMessage(message) {
+  return /\b(login|log in|register|registr|password|authenticate|unauthenticated)\b/i.test(message);
+}
+
+function isAuthSuccess(message) {
+  return /success|successful|logged[ -]?in|already logged|registration complete|registered successfully/i.test(message) && !/not logged|failed|invalid|wrong|error/i.test(message);
 }
 
 function startGuards() {
