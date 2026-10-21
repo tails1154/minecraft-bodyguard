@@ -156,6 +156,7 @@ function masterMaintain() {
       masterCombatTarget = null;
       masterFleeing = false;
       master.pvp.stop();
+      master.pathfinder.setGoal(null);
     } else if (!masterFleeing) {
       master.pvp.attack(masterCombatTarget);
     }
@@ -181,6 +182,10 @@ function masterMaintain() {
 
 function masterFight(target) {
   if (!target || !master.pvp) return;
+  if (masterCombatTarget?.id !== target.id) {
+    log(`master switching from follow to attack: ${masterTargetLabel(target)}`);
+    master.pathfinder.setGoal(null);
+  }
   masterCombatTarget = target;
   masterLastThreatAt = Date.now();
   masterFleeing = false;
@@ -206,6 +211,7 @@ function masterFlee(threat) {
   if (masterFleeing || !threat?.position) return;
   masterFleeing = true;
   master.pvp.stop();
+  master.pathfinder.setGoal(null);
   const direction = master.entity.position.minus(threat.position);
   const length = Math.max(direction.norm(), 0.01);
   const destination = master.entity.position.plus(direction.scaled(12 / length));

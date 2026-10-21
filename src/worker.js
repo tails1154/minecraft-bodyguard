@@ -270,7 +270,11 @@ function followOwner() {
 
 function fight(entity, refreshThreat = true) {
   if (!entity || !bot.pvp || attackCooldown > 0) return;
-  if (combatTarget?.id !== entity.id) log(`attacking ${targetLabel(entity)}`);
+  if (combatTarget?.id !== entity.id) {
+    log(`switching from follow to attack: ${targetLabel(entity)}`);
+    bot.pathfinder.setGoal(null);
+    followingGoal = false;
+  }
   combatTarget = entity;
   if (refreshThreat) lastThreatAt = Date.now();
   fleeing = false;
@@ -302,6 +306,7 @@ function maintainCombat() {
 function fleeFrom(threat) {
   if (!bot.entity || !threat?.position || !movements) return;
   if (bot.pvp) bot.pvp.stop();
+  bot.pathfinder.setGoal(null);
   if (fleeing) return;
   fleeing = true;
   log(`pathfinding away from ${targetLabel(threat)}`);
