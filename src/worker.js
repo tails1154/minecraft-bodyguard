@@ -231,7 +231,7 @@ async function equipCollectedItem(itemName, destination) {
 }
 
 function followOwner() {
-  if (!owner || !bot.entity || !movements) return;
+  if (!owner || !bot.entity || !movements || combatTarget) return;
   const target = findPlayer(owner);
   if (!target) {
     if (lastFollowTarget) log(`owner ${owner} is no longer visible`);
@@ -269,7 +269,7 @@ function followOwner() {
 }
 
 function fight(entity, refreshThreat = true) {
-  if (!entity || !bot.pvp || attackCooldown > 0) return;
+  if (!entity || !bot.pvp) return;
   if (combatTarget?.id !== entity.id) {
     log(`switching from follow to attack: ${targetLabel(entity)}`);
     bot.pathfinder.setGoal(null);
@@ -278,6 +278,7 @@ function fight(entity, refreshThreat = true) {
   combatTarget = entity;
   if (refreshThreat) lastThreatAt = Date.now();
   fleeing = false;
+  if (attackCooldown > 0) return;
   attackCooldown = 10;
   bot.setControlState('sprint', true);
   bot.setControlState('jump', true);
