@@ -21,6 +21,9 @@ let spawned = false;
 let announcedReady = false;
 let authTimer;
 let authComplete = false;
+let followTimer;
+let lastFollowDiagnostic = 0;
+let followingGoal = false;
 const signalThread = new Worker(require.resolve('./signal.js'));
 
 signalThread.on('message', message => {
@@ -34,6 +37,8 @@ function connect() {
   authComplete = false;
   clearTimeout(authTimer);
   authTimer = undefined;
+  clearInterval(followTimer);
+  followTimer = undefined;
   spawned = false;
   announcedReady = false;
   log(`connecting as ${username} to ${config.host}:${config.port}`);
@@ -53,6 +58,7 @@ function connect() {
     movements = new Movements(bot);
     movements.canDig = false;
     bot.pathfinder.setMovements(movements);
+    followTimer = setInterval(followOwner, 1000);
     parentPort.postMessage({ type: 'ready', username });
     attemptAuth();
     announceReady();
@@ -205,10 +211,14 @@ function followOwner() {
   if (!target) {
     if (lastFollowTarget) log(`owner ${owner} is no longer visible`);
     lastFollowTarget = null;
+    if (Date.now() - lastFollowDiagnostic > 5000) {
+      lastFollowDiagnostic = Date.now();
+      log(`owner ${owner} is not currently visible; waiting for an entity`);
+    }
     return;
   }
-  if (lastFollowTarget !== target) {
-    lastFollowTarget = target;
+  if (lastFollowTarget !== target.id) {
+    lastFollowTarget = target.id;
     log(`following owner ${owner}`);
   }
   if (betrayed) {
@@ -218,8 +228,14 @@ function followOwner() {
   const distance = bot.entity.position.distanceTo(target.position);
   if (distance > config.followDistance + 1) {
     bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, config.followDistance));
-  } else if (bot.pathfinder.goal && distance <= config.followDistance) {
+    if (!followingGoal) {
+      followingGoal = true;
+      log(`pathfinding toward ${owner} (${Math.round(distance)} blocks away)`);
+    }
+  } else if (followingGoal) {
     bot.pathfinder.setGoal(null);
+    followingGoal = false;
+    log(`within follow distance of ${owner}`);
   }
 }
 
@@ -285,7 +301,8 @@ function nearestAttacker(hurtEntity) {
 
 function findPlayer(name) {
   const wanted = name.toLowerCase();
-  return Object.values(bot.players).find(player => player.username && player.username.toLowerCase() === wanted)?.entity;
+  const player = bot.players[name] || Object.values(bot.players).find(candidate => candidate.username && candidate.username.toLowerCase() === wanted);
+  return player?.entity || Object.values(bot.entities).find(entity => entity.username && entity.username.toLowerCase() === wanted) || null;
 }
 
 function serializeTarget(entity) {
@@ -305,6 +322,7 @@ parentPort.on('message', message => {
     owner = message.owner;
     log(`owner set to ${owner}`);
     announceReady();
+    followOwner();
   }
   if (message.type === 'follow') {
     owner = message.owner;
@@ -321,6 +339,8 @@ parentPort.on('message', message => {
   if (message.type === 'say' && bot?.chat) bot.chat(message.message);
   if (message.type === 'shutdown') {
     log('shutdown requested');
+    clearInterval(followTimer);
+    followTimer = undefined;
     signalThread.postMessage({ type: 'shutdown' });
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
