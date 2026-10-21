@@ -2,7 +2,7 @@ const { parentPort, workerData } = require('node:worker_threads');
 const { Worker } = require('node:worker_threads');
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const { PvP } = require('mineflayer-pvp');
+const { plugin: PvP } = require('mineflayer-pvp');
 
 const { id, config } = workerData;
 const username = `${config.username}_${id}`;
@@ -81,9 +81,22 @@ function connect() {
 
   bot.on('playerCollect', (collector, collected) => {
     if (!bot.entity || collector.id !== bot.entity.id || typeof collected.getDroppedItem !== 'function') return;
-    const item = collected.getDroppedItem();
+    let item;
+    try {
+      item = collected.getDroppedItem();
+    } catch (error) {
+      log(`collected an item but could not read it: ${error.message}`);
+      return;
+    }
+    if (!item) {
+      log('collected an item but Mineflayer returned no item data');
+      return;
+    }
     const destination = equipmentDestination(item?.name);
-    if (!item || !destination) return;
+    if (!destination) {
+      log(`picked up ${item.count} ${item.displayName || item.name}; not armor or a supported weapon`);
+      return;
+    }
     bot.chat('Thanks!');
     log(`picked up ${item.count} ${item.displayName}; equipping to ${destination}`);
     setTimeout(() => equipCollectedItem(item.name, destination), 250);
