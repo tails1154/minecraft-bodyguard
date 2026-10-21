@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const readline = require('node:readline');
+const mineflayer = require('mineflayer');
 
 const MAX_GUARDS = 5;
 const count = clampInt(process.env.BODYGUARD_COUNT || 1, 1, MAX_GUARDS);
@@ -17,14 +18,47 @@ const config = {
 
 let owner = process.env.OWNER_NAME || null;
 let stopping = false;
+let guardsStarted = false;
+let masterAuthAttempted = false;
 const workers = new Map();
-const knownGuards = new Set();
+const master = mineflayer.createBot({
+  host: config.host,
+  port: config.port,
+  username: `${config.username}_master`,
+  auth: config.auth,
+  ...(config.version ? { version: config.version } : {})
+});
 
-if (!config.password) {
-  console.warn('[bodyguard] AUTHME_PASSWORD is empty; AuthMe login/register will be skipped.');
+if (!config.password) console.warn('[bodyguard] AUTHME_PASSWORD is empty; AuthMe login/register will be skipped.');
+
+master.on('spawn', () => attemptMasterAuth());
+master.on('chat', (sender, message) => {
+  if (sender !== master.username) handleChat(sender, message);
+});
+master.on('messagestr', message => {
+  if (/\b(login|log in|register|registr|password)\b/i.test(message)) attemptMasterAuth(message);
+});
+master.on('error', error => console.error('[master] error:', error.message));
+master.on('kicked', reason => console.error('[master] kicked:', reason));
+master.on('end', () => {
+  if (!stopping) console.error('[master] connection ended.');
+});
+
+function attemptMasterAuth(message = '') {
+  if (!config.password || masterAuthAttempted || !master.chat) return;
+  if (!message || /\b(register|registr|login|log in|password)\b/i.test(message)) {
+    masterAuthAttempted = true;
+    setTimeout(() => master.chat(`/register ${config.password} ${config.password}`), 700);
+    setTimeout(() => master.chat(`/login ${config.password}`), 1400);
+  }
 }
 
-for (let i = 1; i <= count; i += 1) startGuard(i);
+function startGuards() {
+  if (guardsStarted) return false;
+  guardsStarted = true;
+  for (let i = 1; i <= count; i += 1) startGuard(i);
+  return true;
+}
 
 function startGuard(id) {
   const worker = new Worker(path.join(__dirname, 'worker.js'), {
@@ -41,7 +75,6 @@ function startGuard(id) {
 
 function onWorkerMessage(id, message) {
   if (message.type === 'ready') {
-    knownGuards.add(message.username);
     sendTo(id, { type: 'owner', owner });
     return;
   }
@@ -66,33 +99,46 @@ function handleChat(sender, message) {
   if (verb === '!claim') {
     if (!owner) {
       owner = sender;
-      broadcast({ type: 'owner', owner });
-      broadcast({ type: 'say', message: `Bodyguard detail assigned to ${owner}.` });
+      say(`Bodyguard detail assigned to ${owner}. Send !clones to deploy it.`);
       console.log(`[bodyguard] ${owner} claimed the bodyguards.`);
     } else if (sender.toLowerCase() === owner.toLowerCase()) {
-      broadcast({ type: 'say', message: 'You already own the bodyguards.' });
+      say('You already own the bodyguards.');
     }
     return;
   }
 
   if (!owner || sender.toLowerCase() !== owner.toLowerCase()) return;
 
+  if (verb === '!clones') {
+    if (startGuards()) {
+      broadcast({ type: 'owner', owner });
+      say(`Deploying ${count} bodyguards.`);
+    } else {
+      say('The bodyguards are already deployed.');
+    }
+    return;
+  }
+
   if (verb === '!guards' || verb === '!bodyguard') {
     const action = (command[1] || 'status').toLowerCase();
     if (action === 'off' || action === 'stop' || action === 'disconnect' || action === 'release') {
-      broadcast({ type: 'say', message: 'Bodyguards disconnecting.' });
+      say('Bodyguards disconnecting.');
       shutdown();
     } else if (action === 'status') {
-      broadcast({ type: 'say', message: `${workers.size}/${count} bodyguards are connected.` });
+      say(`${workers.size}/${count} bodyguards are connected.`);
     } else if (action === 'follow' || action === 'on') {
       broadcast({ type: 'betray', enabled: false });
       broadcast({ type: 'follow', owner });
-      broadcast({ type: 'say', message: 'Bodyguards following.' });
+      say('Bodyguards following.');
     } else if (action === 'betray') {
       broadcast({ type: 'betray', enabled: true });
-      broadcast({ type: 'say', message: 'The bodyguards have turned against their owner.' });
+      say('The bodyguards have turned against their owner.');
     }
   }
+}
+
+function say(message) {
+  if (master.chat) master.chat(message);
 }
 
 function sendTo(id, message) {
@@ -108,6 +154,7 @@ function shutdown() {
   if (stopping) return;
   stopping = true;
   for (const worker of workers.values()) worker.postMessage({ type: 'shutdown' });
+  if (master) master.quit('Bodyguard dismissed');
   setTimeout(() => process.exit(0), 5000).unref();
 }
 

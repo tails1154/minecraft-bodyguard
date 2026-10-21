@@ -1,6 +1,6 @@
 # Minecraft Bodyguard
 
-Mineflayer bodyguards managed by a coordinator and up to five Node worker threads.
+Mineflayer bodyguards managed by a master connection and up to five Node worker threads. Only the master connects at startup; numbered clones connect after the owner uses `!clones`.
 
 ## Setup
 
@@ -14,6 +14,7 @@ The bot usernames are `<BOT_USERNAME>_1`, `<BOT_USERNAME>_2`, and so on. AuthMe 
 ## In-game commands
 
 - `!claim` — the first player to use it becomes the owner.
+- `!clones` — owner-only deployment of the numbered bodyguards.
 - `!guards status` — owner-only connection status.
 - `!guards follow` — owner-only follow refresh.
 - `!guards off` — owner-only disconnect for all instances.
