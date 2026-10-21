@@ -18,7 +18,7 @@ const config = {
   followDistance: clampInt(process.env.FOLLOW_DISTANCE || 3, 1, 8)
 };
 
-let owner = process.env.OWNER_NAME || null;
+let owner = process.env.OWNER_NAME || 'tails1154';
 let stopping = false;
 let guardsStarted = false;
 let masterAuthAttempted = false;

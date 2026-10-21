@@ -5,7 +5,7 @@ Mineflayer bodyguards managed by a master connection and up to five Node worker 
 ## Setup
 
 1. Install Node.js 18+ and run `npm install`.
-2. Copy `.env.example` to `.env` and export the values in your shell (or use a dotenv loader).
+2. Copy `.env.example` to `.env` and export the values in your shell (or use a dotenv loader). The default owner is `tails1154`; change `OWNER_NAME` if needed.
 3. Set `MC_HOST`, `MC_PORT`, `MC_AUTH`, `BOT_USERNAME`, `BODYGUARD_COUNT` (1–5), and `AUTHME_PASSWORD`.
 4. Start with `npm start`.
 
