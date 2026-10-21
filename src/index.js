@@ -139,6 +139,11 @@ function handleChat(sender, message) {
   const command = message.trim().split(/\s+/);
   const verb = command[0].toLowerCase();
 
+  if (verb === '!help') {
+    say('Commands: !claim, !clones, !guards status, !guards follow, !guards off, !guards betray');
+    return;
+  }
+
   if (verb === '!claim') {
     if (!owner) {
       owner = sender;

@@ -14,6 +14,7 @@ The bot usernames are `<BOT_USERNAME>_1`, `<BOT_USERNAME>_2`, and so on. AuthMe 
 ## In-game commands
 
 - `!claim` — the first player to use it becomes the owner.
+- `!help` — show the available commands in chat.
 - `!clones` — owner-only deployment of the numbered bodyguards.
 - `!guards status` — owner-only connection status.
 - `!guards follow` — owner-only follow refresh.
