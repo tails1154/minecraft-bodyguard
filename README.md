@@ -24,4 +24,6 @@ The bot usernames are `<BOT_USERNAME>_1`, `<BOT_USERNAME>_2`, and so on. AuthMe 
 
 The main Node thread is the master coordinator. Each Mineflayer worker has a separate signaling worker that forwards hit alerts to the master, which then broadcasts a defense order to the other guards. Guards keep fighting while the threat remains active, stop when it dies or the alert expires, and flee with pathfinding at three hearts or less before returning to normal follow behavior.
 
+After deployment, each clone announces `Bodyguard for <owner>. Ready for commands.` When a clone picks up dropped armor or a supported weapon, it says `Thanks!` and equips the item automatically.
+
 This is intended for servers where bot accounts and automation are allowed. It does not bypass server anti-bot rules.

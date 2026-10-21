@@ -17,6 +17,8 @@ let combatTarget = null;
 let lastThreatAt = 0;
 let fleeing = false;
 let lastFollowTarget = null;
+let spawned = false;
+let announcedReady = false;
 const signalThread = new Worker(require.resolve('./signal.js'));
 
 signalThread.on('message', message => {
@@ -27,6 +29,8 @@ connect();
 
 function connect() {
   authAttempted = false;
+  spawned = false;
+  announcedReady = false;
   log(`connecting as ${username} to ${config.host}:${config.port}`);
   bot = mineflayer.createBot({
     host: config.host,
@@ -39,12 +43,14 @@ function connect() {
   bot.loadPlugin(PvP);
 
   bot.once('spawn', () => {
+    spawned = true;
     log(`spawned in ${bot.game?.dimension || 'unknown dimension'}`);
     movements = new Movements(bot);
     movements.canDig = false;
     bot.pathfinder.setMovements(movements);
     parentPort.postMessage({ type: 'ready', username });
     attemptAuth();
+    announceReady();
   });
 
   bot.on('chat', (sender, message) => {
@@ -56,6 +62,16 @@ function connect() {
 
   bot.on('messagestr', message => {
     if (/\b(login|log in|register|registr|password)\b/i.test(message)) attemptAuth(message);
+  });
+
+  bot.on('playerCollect', (collector, collected) => {
+    if (!bot.entity || collector.id !== bot.entity.id || typeof collected.getDroppedItem !== 'function') return;
+    const item = collected.getDroppedItem();
+    const destination = equipmentDestination(item?.name);
+    if (!item || !destination) return;
+    bot.chat('Thanks!');
+    log(`picked up ${item.count} ${item.displayName}; equipping to ${destination}`);
+    setTimeout(() => equipCollectedItem(item.name, destination), 250);
   });
 
   bot.on('entityHurt', entity => {
@@ -105,6 +121,37 @@ function attemptAuth(message = '') {
     log('sending AuthMe register/login commands');
     setTimeout(() => bot.chat(`/register ${config.password} ${config.password}`), 700);
     setTimeout(() => bot.chat(`/login ${config.password}`), 1400);
+  }
+}
+
+function announceReady() {
+  if (!spawned || !owner || announcedReady || !bot?.chat) return;
+  announcedReady = true;
+  bot.chat(`Bodyguard for ${owner}. Ready for commands.`);
+  log(`announced readiness for ${owner}`);
+}
+
+function equipmentDestination(itemName = '') {
+  if (/(helmet|turtle_shell|turtle_helmet)$/.test(itemName)) return 'head';
+  if (/(chestplate|elytra)$/.test(itemName)) return 'torso';
+  if (/leggings$/.test(itemName)) return 'legs';
+  if (/(boots|horse_armor)$/.test(itemName)) return 'feet';
+  if (/(sword|axe|trident|bow|crossbow|mace)$/.test(itemName)) return 'hand';
+  return null;
+}
+
+async function equipCollectedItem(itemName, destination) {
+  if (!bot?.inventory) return;
+  const item = bot.inventory.items().find(candidate => candidate.name === itemName);
+  if (!item) {
+    log(`could not find collected ${itemName} in inventory`);
+    return;
+  }
+  try {
+    await bot.equip(item, destination);
+    log(`equipped ${itemName} in ${destination}`);
+  } catch (error) {
+    log(`could not equip ${itemName}: ${error.message}`);
   }
 }
 
@@ -213,6 +260,7 @@ parentPort.on('message', message => {
   if (message.type === 'owner') {
     owner = message.owner;
     log(`owner set to ${owner}`);
+    announceReady();
   }
   if (message.type === 'follow') {
     owner = message.owner;
